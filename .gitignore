@@ -1,0 +1,59 @@
+# ====================
+# OS files
+# ====================
+.DS_Store
+Thumbs.db
+
+# ====================
+# IDE / Editors
+# ====================
+.metadata/
+.recommenders/
+.settings/
+.vscode/
+.idea/
+*.launch
+
+# ====================
+# STM32CubeIDE project files (user-specific)
+# ====================
+.project
+.cproject
+
+# ====================
+# Build output directories
+# ====================
+Debug/
+Release/
+build/
+
+# ====================
+# Compiled binaries & objects
+# ====================
+*.o
+*.a
+*.elf
+*.map
+*.hex
+*.bin
+*.lst
+*.out
+
+# ====================
+# Dependency & intermediate files
+# ====================
+*.d
+
+# ====================
+# CubeMX backup files
+# ====================
+*.ioc.bak
+
+# ====================
+# Logs & temporary files
+# ====================
+*.log
+*~
+*.swp
+*.tmp
+*.bak
