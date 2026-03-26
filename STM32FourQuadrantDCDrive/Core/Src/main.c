@@ -1,32 +1,27 @@
 /* USER CODE BEGIN Header */
 /**
- ******************************************************************************
- * @file           : main.c
- * @brief          : Main program body
- ******************************************************************************
- * @attention
+ * @file    main.c
+ * @brief   Main application for four-quadrant DC motor control
  *
- * Copyright (c) 2026 STMicroelectronics.
- * All rights reserved.
+ * This firmware implements:
+ *  - Forward and reverse directional control
+ *  - Speed control using a potentiometer
+ *  - Toggle-based push button operation
+ *  - Software dead-time and safety delay for switching protection
  *
- * This software is licensed under terms that can be found in the LICENSE file
- * in the root directory of this software component.
- * If no LICENSE file comes with this software, it is provided AS-IS.
- *
- ******************************************************************************
+ * Target MCU : STM32F446RE
+ * Framework  : STM32 HAL
  */
 /* USER CODE END Header */
 
-/* Includes ------------------------------------------------------------------*/
 #include "main.h"
 
-/* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <stdbool.h>
 /* USER CODE END Includes */
 
-/* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
+/* Motor operating states */
 typedef enum {
     STOP = 0,
     FORWARD,
@@ -34,39 +29,39 @@ typedef enum {
 } Direction;
 /* USER CODE END PTD */
 
-/* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define DEADTIME_US      100U
-#define SAFETY_DELAY     500U
-#define DEBOUNCE_DELAY   200U
+/* Timing constants for safe motor operation */
+#define DEADTIME_US      100
+#define SAFETY_DELAY     500
+#define DEBOUNCE_DELAY   200
 /* USER CODE END PD */
 
-/* Private macro -------------------------------------------------------------*/
-/* USER CODE BEGIN PM */
-
-/* USER CODE END PM */
-
-/* Private variables ---------------------------------------------------------*/
+/* Peripheral handles */
 ADC_HandleTypeDef hadc1;
 TIM_HandleTypeDef htim1;
 
 /* USER CODE BEGIN PV */
+/* Runtime state variables */
 Direction currentDir = STOP;
 bool isRunning = false;
 
+/* Control variables */
 uint32_t pwmVal = 0;
 uint32_t lastDebounce = 0;
+uint32_t filteredADC = 0;
 /* USER CODE END PV */
 
-/* Private function prototypes -----------------------------------------------*/
+/* Function prototypes */
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_TIM1_Init(void);
 
 /* USER CODE BEGIN PFP */
+/* Application-level function prototypes */
 void delay_us(uint16_t us);
 uint32_t readADC(void);
+uint32_t readADC_Averaged(void);
 void runForward(uint32_t pwm);
 void runReverse(uint32_t pwm);
 void stopMotor(void);
@@ -74,59 +69,102 @@ void applyBrake(void);
 void loop_logic(void);
 /* USER CODE END PFP */
 
-/* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-/* ----------- MICROSECOND DELAY ----------- */
+/**
+ * @brief  Generates blocking delay in microseconds using DWT cycle counter
+ * @param  us Delay duration in microseconds
+ */
 void delay_us(uint16_t us)
 {
     uint32_t start = DWT->CYCCNT;
     uint32_t ticks = us * (HAL_RCC_GetHCLKFreq() / 1000000U);
-
     while ((DWT->CYCCNT - start) < ticks)
     {
     }
 }
 
-/* ----------- ADC READ ----------- */
-/* Reads a fresh ADC conversion (0–4095) */
+/**
+ * @brief  Reads one fresh ADC sample from the potentiometer
+ * @retval ADC value in the range 0 to 4095
+ */
 uint32_t readADC(void)
 {
-    /* Ensure a new conversion is ready */
+    HAL_ADC_Start(&hadc1);                         // Start fresh conversion
     HAL_ADC_PollForConversion(&hadc1, 10);
-    return HAL_ADC_GetValue(&hadc1);
+    return HAL_ADC_GetValue(&hadc1);              // 12-bit ADC result
 }
 
-/* ----------- MOTOR FUNCTIONS ----------- */
+/**
+ * @brief  Averages multiple ADC samples for smoother speed control
+ * @retval Averaged ADC value
+ */
+uint32_t readADC_Averaged(void)
+{
+    uint32_t sum = 0;
 
+    for (int i = 0; i < 8; i++)
+    {
+        sum += readADC();
+    }
+
+    return (sum / 8);
+}
+
+/**
+ * @brief  Drives the motor in forward direction
+ * @param  pwm PWM duty value (0 to 4095)
+ *
+ * Switching state:
+ *  - INAHI = PWM
+ *  - INBHI = LOW
+ *  - INALO = LOW
+ *  - INBLO = HIGH
+ */
 void runForward(uint32_t pwm)
 {
-    /* Clamp just in case */
-    if (pwm > 4095U) pwm = 4095U;
+    if (pwm > 4095) pwm = 4095;
 
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0U);      // INBHI LOW
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);       // INBHI LOW
     HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_RESET);  // INALO LOW
 
     __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, pwm);     // INAHI PWM
     HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1, GPIO_PIN_SET);    // INBLO HIGH
 }
 
+/**
+ * @brief  Drives the motor in reverse direction
+ * @param  pwm PWM duty value (0 to 4095)
+ *
+ * Switching state:
+ *  - INAHI = LOW
+ *  - INBHI = PWM
+ *  - INALO = HIGH
+ *  - INBLO = LOW
+ */
 void runReverse(uint32_t pwm)
 {
-    /* Clamp just in case */
-    if (pwm > 4095U) pwm = 4095U;
+    if (pwm > 4095) pwm = 4095;
 
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0U);      // INAHI LOW
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);       // INAHI LOW
     HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1, GPIO_PIN_RESET);  // INBLO LOW
 
     __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, pwm);     // INBHI PWM
     HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_SET);    // INALO HIGH
 }
 
+/**
+ * @brief  Turns OFF all bridge switches safely
+ *
+ * Used during:
+ *  - Stop condition
+ *  - Direction transition
+ *  - Brake condition
+ */
 void stopMotor(void)
 {
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0U);
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0U);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
 
     HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_RESET);
     HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1, GPIO_PIN_RESET);
@@ -134,21 +172,37 @@ void stopMotor(void)
     delay_us(DEADTIME_US);
 }
 
+/**
+ * @brief  Applies brake action
+ *
+ * Current implementation performs coast stop
+ * by turning OFF all switches and holding for 500 ms.
+ */
 void applyBrake(void)
 {
-    /* Same behavior as your design: all OFF + 500 ms */
     stopMotor();
-    HAL_Delay(500U);
+    HAL_Delay(500);
 }
 
-/* ----------- MAIN CONTROL LOGIC ----------- */
+/**
+ * @brief  Main application control logic
+ *
+ * Handles:
+ *  - Potentiometer speed acquisition
+ *  - Button debounce and toggle logic
+ *  - Direction selection
+ *  - Brake action
+ *  - Motor output update
+ */
 void loop_logic(void)
 {
-    pwmVal = readADC();   // 0–4095 full-scale STM32 ADC
+    /* Read filtered speed reference */
+    filteredADC = readADC_Averaged();
+    pwmVal = filteredADC;
 
-    /* -------- FORWARD BUTTON -------- */
-    if ((HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_0) == GPIO_PIN_RESET) &&
-        ((HAL_GetTick() - lastDebounce) > DEBOUNCE_DELAY))
+    /* Forward button toggle */
+    if (!HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_0) &&
+        (HAL_GetTick() - lastDebounce > DEBOUNCE_DELAY))
     {
         lastDebounce = HAL_GetTick();
 
@@ -167,9 +221,9 @@ void loop_logic(void)
         }
     }
 
-    /* -------- REVERSE BUTTON -------- */
-    if ((HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_1) == GPIO_PIN_RESET) &&
-        ((HAL_GetTick() - lastDebounce) > DEBOUNCE_DELAY))
+    /* Reverse button toggle */
+    if (!HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_1) &&
+        (HAL_GetTick() - lastDebounce > DEBOUNCE_DELAY))
     {
         lastDebounce = HAL_GetTick();
 
@@ -188,9 +242,9 @@ void loop_logic(void)
         }
     }
 
-    /* -------- BRAKE BUTTON -------- */
-    if ((HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_2) == GPIO_PIN_RESET) &&
-        ((HAL_GetTick() - lastDebounce) > DEBOUNCE_DELAY))
+    /* Brake button action */
+    if (!HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_2) &&
+        (HAL_GetTick() - lastDebounce > DEBOUNCE_DELAY))
     {
         lastDebounce = HAL_GetTick();
 
@@ -199,17 +253,13 @@ void loop_logic(void)
         isRunning = false;
     }
 
-    /* -------- CONTROL -------- */
+    /* Execute motor control state */
     if (isRunning)
     {
         if (currentDir == FORWARD)
-        {
             runForward(pwmVal);
-        }
         else if (currentDir == REVERSE)
-        {
             runReverse(pwmVal);
-        }
     }
     else
     {
@@ -220,65 +270,41 @@ void loop_logic(void)
 /* USER CODE END 0 */
 
 /**
- * @brief  The application entry point.
+ * @brief  Main program entry point
  * @retval int
  */
 int main(void)
 {
-    /* USER CODE BEGIN 1 */
-
-    /* USER CODE END 1 */
-
-    /* MCU Configuration--------------------------------------------------------*/
-
-    /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
     HAL_Init();
-
-    /* USER CODE BEGIN Init */
-
-    /* USER CODE END Init */
-
-    /* Configure the system clock */
     SystemClock_Config();
 
-    /* USER CODE BEGIN SysInit */
-
-    /* USER CODE END SysInit */
-
-    /* Initialize all configured peripherals */
     MX_GPIO_Init();
     MX_ADC1_Init();
     MX_TIM1_Init();
 
     /* USER CODE BEGIN 2 */
 
-    /* Start PWM outputs */
+    /* Start PWM generation on both high-side channels */
     HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
     HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
 
-    /* Start ADC in continuous conversion mode */
+    /* Start ADC peripheral */
     HAL_ADC_Start(&hadc1);
 
-    /* Enable DWT cycle counter for microsecond delay */
+    /* Enable DWT cycle counter for microsecond timing */
     CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
-    DWT->CYCCNT = 0U;
+    DWT->CYCCNT = 0;
     DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 
-    /* Safe OFF state at startup */
+    /* Ensure safe bridge state at startup */
     stopMotor();
 
     /* USER CODE END 2 */
 
-    /* Infinite loop */
-    /* USER CODE BEGIN WHILE */
     while (1)
     {
         loop_logic();
-        /* USER CODE END WHILE */
-
-        /* USER CODE BEGIN 3 */
     }
-    /* USER CODE END 3 */
 }
 
 /**
@@ -290,14 +316,9 @@ void SystemClock_Config(void)
     RCC_OscInitTypeDef RCC_OscInitStruct = {0};
     RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
-    /** Configure the main internal regulator output voltage
-     */
     __HAL_RCC_PWR_CLK_ENABLE();
     __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE3);
 
-    /** Initializes the RCC Oscillators according to the specified parameters
-     * in the RCC_OscInitTypeDef structure.
-     */
     RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
     RCC_OscInitStruct.HSIState = RCC_HSI_ON;
     RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
@@ -314,8 +335,6 @@ void SystemClock_Config(void)
         Error_Handler();
     }
 
-    /** Initializes the CPU, AHB and APB buses clocks
-     */
     RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK
                                 | RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
     RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
@@ -330,21 +349,18 @@ void SystemClock_Config(void)
 }
 
 /**
- * @brief ADC1 Initialization Function
- * @param None
+ * @brief  Initializes ADC1 for potentiometer input sampling
  * @retval None
  */
 static void MX_ADC1_Init(void)
 {
     ADC_ChannelConfTypeDef sConfig = {0};
 
-    /** Configure the global features of the ADC
-     */
     hadc1.Instance = ADC1;
     hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
     hadc1.Init.Resolution = ADC_RESOLUTION_12B;
     hadc1.Init.ScanConvMode = DISABLE;
-    hadc1.Init.ContinuousConvMode = ENABLE;
+    hadc1.Init.ContinuousConvMode = DISABLE;   // Manual conversion mode
     hadc1.Init.DiscontinuousConvMode = DISABLE;
     hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
     hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
@@ -358,11 +374,9 @@ static void MX_ADC1_Init(void)
         Error_Handler();
     }
 
-    /** Configure ADC regular channel
-     */
     sConfig.Channel = ADC_CHANNEL_0;
     sConfig.Rank = 1;
-    sConfig.SamplingTime = ADC_SAMPLETIME_15CYCLES;   // <-- Revised for pot stability
+    sConfig.SamplingTime = ADC_SAMPLETIME_56CYCLES;   // Improved stability for potentiometer
 
     if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
     {
@@ -371,8 +385,7 @@ static void MX_ADC1_Init(void)
 }
 
 /**
- * @brief TIM1 Initialization Function
- * @param None
+ * @brief  Initializes TIM1 for PWM generation
  * @retval None
  */
 static void MX_TIM1_Init(void)
@@ -383,9 +396,9 @@ static void MX_TIM1_Init(void)
     TIM_BreakDeadTimeConfigTypeDef sBreakDeadTimeConfig = {0};
 
     htim1.Instance = TIM1;
-    htim1.Init.Prescaler = 20;              // ~1 kHz PWM with ARR = 4095
+    htim1.Init.Prescaler = 20;
     htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
-    htim1.Init.Period = 4095;               // 12-bit PWM resolution
+    htim1.Init.Period = 4095;
     htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
     htim1.Init.RepetitionCounter = 0;
     htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
@@ -414,7 +427,7 @@ static void MX_TIM1_Init(void)
     }
 
     sConfigOC.OCMode = TIM_OCMODE_PWM1;
-    sConfigOC.Pulse = 0U;
+    sConfigOC.Pulse = 0;
     sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
     sConfigOC.OCNPolarity = TIM_OCNPOLARITY_HIGH;
     sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
@@ -431,11 +444,10 @@ static void MX_TIM1_Init(void)
         Error_Handler();
     }
 
-    /* We are using software dead-time, not hardware complementary mode */
     sBreakDeadTimeConfig.OffStateRunMode = TIM_OSSR_DISABLE;
     sBreakDeadTimeConfig.OffStateIDLEMode = TIM_OSSI_DISABLE;
     sBreakDeadTimeConfig.LockLevel = TIM_LOCKLEVEL_OFF;
-    sBreakDeadTimeConfig.DeadTime = 0U;
+    sBreakDeadTimeConfig.DeadTime = 0;
     sBreakDeadTimeConfig.BreakState = TIM_BREAK_DISABLE;
     sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_HIGH;
     sBreakDeadTimeConfig.AutomaticOutput = TIM_AUTOMATICOUTPUT_DISABLE;
@@ -449,37 +461,34 @@ static void MX_TIM1_Init(void)
 }
 
 /**
- * @brief GPIO Initialization Function
- * @param None
+ * @brief  Initializes GPIO pins for buttons, outputs, and status signals
  * @retval None
  */
 static void MX_GPIO_Init(void)
 {
     GPIO_InitTypeDef GPIO_InitStruct = {0};
 
-    /* GPIO Ports Clock Enable */
     __HAL_RCC_GPIOC_CLK_ENABLE();
     __HAL_RCC_GPIOH_CLK_ENABLE();
     __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_GPIOB_CLK_ENABLE();
 
-    /* Safe startup states */
+    /* Safe default output state */
     HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
     HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0 | GPIO_PIN_1, GPIO_PIN_RESET);
 
-    /* USER button (board button) */
     GPIO_InitStruct.Pin = B1_Pin;
     GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
 
-    /* PC0, PC1, PC2 as input pull-up buttons */
+    /* User push-buttons */
     GPIO_InitStruct.Pin = GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_2;
     GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
     GPIO_InitStruct.Pull = GPIO_PULLUP;
     HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
-    /* USART2 pins */
+    /* USART2 pins generated by CubeMX */
     GPIO_InitStruct.Pin = USART_TX_Pin | USART_RX_Pin;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
@@ -487,14 +496,14 @@ static void MX_GPIO_Init(void)
     GPIO_InitStruct.Alternate = GPIO_AF7_USART2;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-    /* LD2 LED */
+    /* On-board LED */
     GPIO_InitStruct.Pin = LD2_Pin;
     GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
 
-    /* PB0, PB1 as low-side digital outputs */
+    /* Low-side H-bridge control outputs */
     GPIO_InitStruct.Pin = GPIO_PIN_0 | GPIO_PIN_1;
     GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
@@ -503,38 +512,20 @@ static void MX_GPIO_Init(void)
 }
 
 /**
- * @brief  This function is executed in case of error occurrence.
- * @retval None
+ * @brief  Handles unrecoverable system errors
+ *
+ * All motor drive outputs are forced OFF before entering fail-safe loop.
  */
 void Error_Handler(void)
 {
-    /* USER CODE BEGIN Error_Handler_Debug */
     __disable_irq();
 
-    /* Safe shutdown */
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0U);
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0U);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
     HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_RESET);
     HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1, GPIO_PIN_RESET);
 
     while (1)
     {
     }
-    /* USER CODE END Error_Handler_Debug */
 }
-
-#ifdef USE_FULL_ASSERT
-/**
-  * @brief  Reports the name of the source file and the source line number
-  *         where the assert_param error has occurred.
-  * @param  file: pointer to the source file name
-  * @param  line: assert_param error line source number
-  * @retval None
-  */
-void assert_failed(uint8_t *file, uint32_t line)
-{
-    /* USER CODE BEGIN 6 */
-    /* User can add implementation here */
-    /* USER CODE END 6 */
-}
-#endif /* USE_FULL_ASSERT */
