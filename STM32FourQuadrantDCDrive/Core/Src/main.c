@@ -36,9 +36,9 @@ typedef enum {
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define DEADTIME_US      100
-#define SAFETY_DELAY     500
-#define DEBOUNCE_DELAY   200
+#define DEADTIME_US      100U
+#define SAFETY_DELAY     500U
+#define DEBOUNCE_DELAY   200U
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -77,6 +77,146 @@ void loop_logic(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
+/* ----------- MICROSECOND DELAY ----------- */
+void delay_us(uint16_t us)
+{
+    uint32_t start = DWT->CYCCNT;
+    uint32_t ticks = us * (HAL_RCC_GetHCLKFreq() / 1000000U);
+
+    while ((DWT->CYCCNT - start) < ticks)
+    {
+    }
+}
+
+/* ----------- ADC READ ----------- */
+/* Reads a fresh ADC conversion (0–4095) */
+uint32_t readADC(void)
+{
+    /* Ensure a new conversion is ready */
+    HAL_ADC_PollForConversion(&hadc1, 10);
+    return HAL_ADC_GetValue(&hadc1);
+}
+
+/* ----------- MOTOR FUNCTIONS ----------- */
+
+void runForward(uint32_t pwm)
+{
+    /* Clamp just in case */
+    if (pwm > 4095U) pwm = 4095U;
+
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0U);      // INBHI LOW
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_RESET);  // INALO LOW
+
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, pwm);     // INAHI PWM
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1, GPIO_PIN_SET);    // INBLO HIGH
+}
+
+void runReverse(uint32_t pwm)
+{
+    /* Clamp just in case */
+    if (pwm > 4095U) pwm = 4095U;
+
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0U);      // INAHI LOW
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1, GPIO_PIN_RESET);  // INBLO LOW
+
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, pwm);     // INBHI PWM
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_SET);    // INALO HIGH
+}
+
+void stopMotor(void)
+{
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0U);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0U);
+
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1, GPIO_PIN_RESET);
+
+    delay_us(DEADTIME_US);
+}
+
+void applyBrake(void)
+{
+    /* Same behavior as your design: all OFF + 500 ms */
+    stopMotor();
+    HAL_Delay(500U);
+}
+
+/* ----------- MAIN CONTROL LOGIC ----------- */
+void loop_logic(void)
+{
+    pwmVal = readADC();   // 0–4095 full-scale STM32 ADC
+
+    /* -------- FORWARD BUTTON -------- */
+    if ((HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_0) == GPIO_PIN_RESET) &&
+        ((HAL_GetTick() - lastDebounce) > DEBOUNCE_DELAY))
+    {
+        lastDebounce = HAL_GetTick();
+
+        if (currentDir != FORWARD)
+        {
+            stopMotor();
+            HAL_Delay(SAFETY_DELAY);
+            currentDir = FORWARD;
+            isRunning = true;
+        }
+        else
+        {
+            currentDir = STOP;
+            isRunning = false;
+            stopMotor();
+        }
+    }
+
+    /* -------- REVERSE BUTTON -------- */
+    if ((HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_1) == GPIO_PIN_RESET) &&
+        ((HAL_GetTick() - lastDebounce) > DEBOUNCE_DELAY))
+    {
+        lastDebounce = HAL_GetTick();
+
+        if (currentDir != REVERSE)
+        {
+            stopMotor();
+            HAL_Delay(SAFETY_DELAY);
+            currentDir = REVERSE;
+            isRunning = true;
+        }
+        else
+        {
+            currentDir = STOP;
+            isRunning = false;
+            stopMotor();
+        }
+    }
+
+    /* -------- BRAKE BUTTON -------- */
+    if ((HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_2) == GPIO_PIN_RESET) &&
+        ((HAL_GetTick() - lastDebounce) > DEBOUNCE_DELAY))
+    {
+        lastDebounce = HAL_GetTick();
+
+        applyBrake();
+        currentDir = STOP;
+        isRunning = false;
+    }
+
+    /* -------- CONTROL -------- */
+    if (isRunning)
+    {
+        if (currentDir == FORWARD)
+        {
+            runForward(pwmVal);
+        }
+        else if (currentDir == REVERSE)
+        {
+            runReverse(pwmVal);
+        }
+    }
+    else
+    {
+        stopMotor();
+    }
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -112,19 +252,19 @@ int main(void)
 
     /* USER CODE BEGIN 2 */
 
-    /* Start PWM channels */
+    /* Start PWM outputs */
     HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
     HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
 
-    /* Start ADC in continuous mode */
+    /* Start ADC in continuous conversion mode */
     HAL_ADC_Start(&hadc1);
 
     /* Enable DWT cycle counter for microsecond delay */
     CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
-    DWT->CYCCNT = 0;
+    DWT->CYCCNT = 0U;
     DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 
-    /* Force safe OFF state at startup */
+    /* Safe OFF state at startup */
     stopMotor();
 
     /* USER CODE END 2 */
@@ -222,7 +362,7 @@ static void MX_ADC1_Init(void)
      */
     sConfig.Channel = ADC_CHANNEL_0;
     sConfig.Rank = 1;
-    sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
+    sConfig.SamplingTime = ADC_SAMPLETIME_15CYCLES;   // <-- Revised for pot stability
 
     if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
     {
@@ -243,9 +383,9 @@ static void MX_TIM1_Init(void)
     TIM_BreakDeadTimeConfigTypeDef sBreakDeadTimeConfig = {0};
 
     htim1.Instance = TIM1;
-    htim1.Init.Prescaler = 20;              // ~1 kHz PWM
+    htim1.Init.Prescaler = 20;              // ~1 kHz PWM with ARR = 4095
     htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
-    htim1.Init.Period = 4095;               // 12-bit resolution
+    htim1.Init.Period = 4095;               // 12-bit PWM resolution
     htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
     htim1.Init.RepetitionCounter = 0;
     htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
@@ -274,7 +414,7 @@ static void MX_TIM1_Init(void)
     }
 
     sConfigOC.OCMode = TIM_OCMODE_PWM1;
-    sConfigOC.Pulse = 0;
+    sConfigOC.Pulse = 0U;
     sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
     sConfigOC.OCNPolarity = TIM_OCNPOLARITY_HIGH;
     sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
@@ -291,11 +431,11 @@ static void MX_TIM1_Init(void)
         Error_Handler();
     }
 
-    /* Software dead-time is used, not hardware complementary dead-time */
+    /* We are using software dead-time, not hardware complementary mode */
     sBreakDeadTimeConfig.OffStateRunMode = TIM_OSSR_DISABLE;
     sBreakDeadTimeConfig.OffStateIDLEMode = TIM_OSSI_DISABLE;
     sBreakDeadTimeConfig.LockLevel = TIM_LOCKLEVEL_OFF;
-    sBreakDeadTimeConfig.DeadTime = 0;
+    sBreakDeadTimeConfig.DeadTime = 0U;
     sBreakDeadTimeConfig.BreakState = TIM_BREAK_DISABLE;
     sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_HIGH;
     sBreakDeadTimeConfig.AutomaticOutput = TIM_AUTOMATICOUTPUT_DISABLE;
@@ -327,19 +467,19 @@ static void MX_GPIO_Init(void)
     HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
     HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0 | GPIO_PIN_1, GPIO_PIN_RESET);
 
-    /*Configure GPIO pin : B1_Pin */
+    /* USER button (board button) */
     GPIO_InitStruct.Pin = B1_Pin;
     GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
 
-    /*Configure GPIO pins : PC0 PC1 PC2 */
+    /* PC0, PC1, PC2 as input pull-up buttons */
     GPIO_InitStruct.Pin = GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_2;
     GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
     GPIO_InitStruct.Pull = GPIO_PULLUP;
     HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
-    /*Configure GPIO pins : USART_TX_Pin USART_RX_Pin */
+    /* USART2 pins */
     GPIO_InitStruct.Pin = USART_TX_Pin | USART_RX_Pin;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
@@ -347,153 +487,20 @@ static void MX_GPIO_Init(void)
     GPIO_InitStruct.Alternate = GPIO_AF7_USART2;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-    /*Configure GPIO pin : LD2_Pin */
+    /* LD2 LED */
     GPIO_InitStruct.Pin = LD2_Pin;
     GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
 
-    /*Configure GPIO pins : PB0 PB1 */
+    /* PB0, PB1 as low-side digital outputs */
     GPIO_InitStruct.Pin = GPIO_PIN_0 | GPIO_PIN_1;
     GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 }
-
-/* USER CODE BEGIN 4 */
-
-/* ----------- MICROSECOND DELAY ----------- */
-void delay_us(uint16_t us)
-{
-    uint32_t start = DWT->CYCCNT;
-    uint32_t ticks = us * (HAL_RCC_GetHCLKFreq() / 1000000U);
-    while ((DWT->CYCCNT - start) < ticks)
-    {
-    }
-}
-
-/* ----------- ADC READ ----------- */
-uint32_t readADC(void)
-{
-    return HAL_ADC_GetValue(&hadc1);   // 0 to 4095
-}
-
-/* ----------- MOTOR FUNCTIONS ----------- */
-
-void runForward(uint32_t pwm)
-{
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);       // INBHI LOW
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_RESET);  // INALO LOW
-
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, pwm);     // INAHI PWM
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1, GPIO_PIN_SET);    // INBLO HIGH
-}
-
-void runReverse(uint32_t pwm)
-{
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);       // INAHI LOW
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1, GPIO_PIN_RESET);  // INBLO LOW
-
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, pwm);     // INBHI PWM
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_SET);    // INALO HIGH
-}
-
-void stopMotor(void)
-{
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
-
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1, GPIO_PIN_RESET);
-
-    delay_us(DEADTIME_US);
-}
-
-void applyBrake(void)
-{
-    stopMotor();
-    HAL_Delay(500);
-}
-
-/* ----------- MAIN CONTROL LOGIC ----------- */
-void loop_logic(void)
-{
-    pwmVal = readADC();   // 0 to 4095
-
-    /* -------- FORWARD BUTTON -------- */
-    if (!HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_0) &&
-        (HAL_GetTick() - lastDebounce > DEBOUNCE_DELAY))
-    {
-        lastDebounce = HAL_GetTick();
-
-        if (currentDir != FORWARD)
-        {
-            stopMotor();
-            HAL_Delay(SAFETY_DELAY);
-            currentDir = FORWARD;
-            isRunning = true;
-        }
-        else
-        {
-            currentDir = STOP;
-            isRunning = false;
-            stopMotor();
-        }
-    }
-
-    /* -------- REVERSE BUTTON -------- */
-    if (!HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_1) &&
-        (HAL_GetTick() - lastDebounce > DEBOUNCE_DELAY))
-    {
-        lastDebounce = HAL_GetTick();
-
-        if (currentDir != REVERSE)
-        {
-            stopMotor();
-            HAL_Delay(SAFETY_DELAY);
-            currentDir = REVERSE;
-            isRunning = true;
-        }
-        else
-        {
-            currentDir = STOP;
-            isRunning = false;
-            stopMotor();
-        }
-    }
-
-    /* -------- BRAKE BUTTON -------- */
-    if (!HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_2) &&
-        (HAL_GetTick() - lastDebounce > DEBOUNCE_DELAY))
-    {
-        lastDebounce = HAL_GetTick();
-
-        applyBrake();
-        currentDir = STOP;
-        isRunning = false;
-    }
-
-    /* -------- CONTROL -------- */
-    if (isRunning)
-    {
-        if (currentDir == FORWARD)
-        {
-            runForward(pwmVal);
-        }
-        else if (currentDir == REVERSE)
-        {
-            runReverse(pwmVal);
-        }
-    }
-    else
-    {
-        stopMotor();
-    }
-}
-
-/* USER CODE END 4 */
 
 /**
  * @brief  This function is executed in case of error occurrence.
@@ -505,8 +512,8 @@ void Error_Handler(void)
     __disable_irq();
 
     /* Safe shutdown */
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0U);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0U);
     HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_RESET);
     HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1, GPIO_PIN_RESET);
 
@@ -516,7 +523,7 @@ void Error_Handler(void)
     /* USER CODE END Error_Handler_Debug */
 }
 
-#ifdef  USE_FULL_ASSERT
+#ifdef USE_FULL_ASSERT
 /**
   * @brief  Reports the name of the source file and the source line number
   *         where the assert_param error has occurred.
@@ -527,7 +534,7 @@ void Error_Handler(void)
 void assert_failed(uint8_t *file, uint32_t line)
 {
     /* USER CODE BEGIN 6 */
-    /* User can add his own implementation to report the file name and line number */
+    /* User can add implementation here */
     /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */
